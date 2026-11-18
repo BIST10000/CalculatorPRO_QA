@@ -4,7 +4,7 @@ test('exact Python form, defaults, polynomial shapes, numbering and no date bran
   await page.goto('/');
   await expect(page).toHaveTitle('Качество ПО');
   await expect(page.locator('.input-columns input[type=text]')).toHaveCount(47);
-  await expect(page.locator('.input-columns select')).toHaveCount(7);
+  await expect(page.locator('.function-row select')).toHaveCount(7);
   await expect(page.getByLabel('u5 начало',{exact:true})).toHaveValue('0.9');
   await expect(page.getByLabel('u125 начало',{exact:true})).toHaveValue('0.43');
   const shapes=[4,2,3,2,3,2,3];
@@ -75,9 +75,9 @@ test('all five classic radar snapshots have individual scales and all time-serie
   const scales=await page.locator('.radar p').allTextContents();expect(new Set(scales).size).toBeGreaterThan(1);
   await page.getByText('Выбрать линии (6 из 28)',{exact:true}).click();
   await page.getByRole('checkbox',{name:/^u56 ·/}).check();
-  await expect(page.locator('polyline[data-series="8"]')).not.toHaveAttribute('stroke-dasharray');
+  await expect(page.locator('g[data-series="8"]')).not.toHaveAttribute('stroke-dasharray');
   await expect(page.locator('.chart [stroke-dasharray]')).toHaveCount(0);
   await page.getByRole('checkbox',{name:/^u5 ·/}).uncheck();
-  await expect(page.locator('polyline[data-series="8"]')).not.toHaveAttribute('stroke-dasharray');
+  await expect(page.locator('g[data-series="8"]')).not.toHaveAttribute('stroke-dasharray');
   await page.screenshot({path:'verification/signed-snapshots.png',fullPage:true});
 });

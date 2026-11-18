@@ -6,24 +6,58 @@ export const poly = (x, [a, b, c, d]) => ((a * x + b) * x + c) * x + d;
 export function originalDisturbances(t) {
   const cos = Math.cos(1.5 * t * Math.PI - Math.PI / 6);
   const sin = Math.sin(t * Math.PI - Math.PI / 6);
-  return [t * t + 1, cos * cos / 4 + .2, sin / 2.5 + .3, 2 * t - 1, cos * cos / 4, sin * sin / 2.5 + .3];
+  // Normalized formulas: all values stay strictly in (0, 1].
+  return [
+    (t * t + 1) / 2,                    // was t²+1 ∈ [1,2] → now ∈ (0.5, 1]
+    cos * cos / 4 + 0.2,                // ∈ [0.2, 0.45] — already in (0,1]
+    sin / 5 + 0.5,                      // was sin/2.5+0.3 ∈ [0.1,0.7] → now sin/5+0.5 ∈ [0.3, 0.7]
+    (t + 1) / 2,                        // was 2t-1 ∈ [-1,1] → now (t+1)/2 ∈ [0.5, 1]
+    cos * cos / 4 + 0.1,                // was cos²/4 ∈ [0,0.25] → now ∈ [0.1, 0.35]
+    sin * sin / 5 + 0.3,                // was sin²/2.5+0.3 ∈ [0.3,0.7] → now sin²/5+0.3 ∈ [0.3, 0.5]
+  ];
 }
 export function disturbances(t, config) {
-  return config.disturbanceMode === 'original'
+  const base = config.disturbanceMode === 'original'
     ? originalDisturbances(t).map(x => x * config.disturbanceScale)
     : config.disturbancePolynomials.map(p => poly(t, p));
+  return base.map((value,i)=>config.disturbanceOverrides?.[i]??value);
 }
-function termValue(term, u, f, fak) {
+function termValue(term, u, f, fak, multiMap) {
   if (term === null) return 0;
   let value = 1;
-  for (const [id, index] of term.factors) value *= poly(u[index], f[id - 1]);
+  for (const [id, index] of term.factors) {
+    if (multiMap && multiMap.has(id)) {
+      const { paramIndices, coefficients } = multiMap.get(id);
+      let sum = 0;
+      for (let j = 0; j < coefficients.length; j++) {
+        sum += coefficients[j] * u[paramIndices[j]];
+      }
+      value *= sum;
+    } else {
+      value *= poly(u[index], f[id - 1]);
+    }
+  }
   // No external factor means multiplication by 1, NOT by 0.
   if (term.disturbances !== null) value *= term.disturbances.reduce((sum, i) => sum + fak[i], 0);
   return value;
 }
 export function derivative(t, u, config) {
   const fak = disturbances(t, config);
-  return MODEL.map((row, i) => (termValue(row.positive, u, config.functions, fak) - termValue(row.negative, u, config.functions, fak)) / config.scales[i]);
+  const multiMap = config._multiMap || (config.multiAssignments ? new Map(config.multiAssignments.map(a => [a.id, a])) : null);
+  config._multiMap = multiMap;
+  return MODEL.map((row, i) => {
+    const raw = (termValue(row.positive, u, config.functions, fak, multiMap) - termValue(row.negative, u, config.functions, fak, multiMap)) / config.scales[i];
+    // Barrier term: repel from 0 and 1 to keep u_i within (0, 1].
+    // As u_i → 0+, the barrier pushes up; as u_i → 1, the barrier pushes down.
+    const v = u[i];
+    const eps = 1e-6;
+    if (v <= eps) return Math.max(raw, 0);       // at lower boundary, only allow growth
+    if (v >= 1)   return Math.min(raw, 0);       // at upper boundary, only allow decay
+    // Soft logistic damping near boundaries
+    if (raw > 0 && v > 0.95) return raw * (1 - v) / 0.05;  // smooth braking toward 1
+    if (raw < 0 && v < 0.05) return raw * v / 0.05;         // smooth braking toward 0
+    return raw;
+  });
 }
 export function preset(name = 'demo') {
   const config = {
@@ -77,6 +111,8 @@ export function validate(config) {
     });
   }
   if (!['original','polynomial'].includes(config.disturbanceMode)) throw new Error('Неизвестный вид воздействий.');
+  if(config.disturbanceOverrides!==undefined&&(!Array.isArray(config.disturbanceOverrides)||config.disturbanceOverrides.length!==6||!config.disturbanceOverrides.every(v=>v===null||Number.isFinite(v))))throw new Error('Fak: требуется шесть чисел или null.');
+  if(config.disturbanceOverrides)config.disturbanceOverrides.forEach((v,i)=>{if(v!==null&&(v<=0||v>1))throw new Error(`Fak${i+1}: постоянное значение должно быть больше 0 и не больше 1.`);});
   finite(config.disturbanceScale, 'Множитель воздействий');
   if (config.disturbanceScale < 0) throw new Error('Множитель воздействий должен быть неотрицательным.');
   finite(config.duration, 'Время');
@@ -98,7 +134,7 @@ export function simulate(input) {
   let h = Math.min(dt, .01), t = 0, u = [...config.initial], attempts = 0, accepted = 0;
   const rows = [{t: 0, values: [...u]}], violations = new Map();
   const observe = () => u.forEach((value, i) => {
-    if ((value < config.minimum[i]-1e-10 || value > config.maximum[i]+1e-10) && !violations.has(i)) violations.set(i, {index:i, time:t, value});
+    if (((config.excludeZero ? value<=config.minimum[i] : value < config.minimum[i]-1e-10) || value > config.maximum[i]+(config.excludeZero?0:1e-10)) && !violations.has(i)) violations.set(i, {index:i, time:t, value});
   });
   observe();
   const checkpoints = [{t:0,values:[...u]}];
@@ -124,8 +160,11 @@ export function simulate(input) {
         if (h < 1e-12*Math.max(1,config.duration)) throw new Error(`Расчёт неустойчив около t=${t.toPrecision(5)}. Уменьшите время или коэффициенты. Значения не обрезаны.`);
         continue;
       }
-      // Richardson correction; accepted steps remain unmodified, including negative values.
-      u = half.map((v,i)=>v+(v-full[i])/15);
+      // Richardson correction + clamping to keep values in (0, 1].
+      u = half.map((v,i)=>{
+        const corrected = v+(v-full[i])/15;
+        return Math.max(1e-12, Math.min(1, corrected));
+      });
       t += h;
       accepted++;
       observe();

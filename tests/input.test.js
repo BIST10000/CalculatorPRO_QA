@@ -5,14 +5,13 @@ import {inputPreset,validateInput,toEngineConfig,DEGREES} from '../src/input-mod
 import {simulate,poly} from '../src/engine.js';
 
 test('same 28 defaults, 7 ids, 19 coefficients and id range as the actual Python UI',()=>{
-  const source=fs.readFileSync(new URL('../../Models-and-methods-for-checking-the-feasibility-of-an-operation-plan-master/ui_dialog.py',import.meta.url),'utf8');
-  const defaults=[];
-  for(const m of source.matchAll(/begin_expression_lineEdit_(\d+)\.setText\(_translate\("Dialog", "([^"]+)"\)\)/g))defaults[Number(m[1])-1]=Number(m[2]);
+  const baseline=JSON.parse(fs.readFileSync(new URL('./fixtures/python-form.json',import.meta.url),'utf8').replace(/^\uFEFF/,''));
+  const defaults=baseline.initial;
   const input=inputPreset();assert.deepEqual(input.initial,defaults);
   assert.deepEqual(input.assignments.map(r=>r.id),[1,2,3,4,5,6,7]);
   assert.deepEqual(input.assignments.map(r=>r.coefficients.length),[4,2,3,2,3,2,3]);
   assert.equal(input.initial.length+input.assignments.length+input.assignments.flatMap(r=>r.coefficients).length,54);
-  assert.ok(source.includes('range(1, 127)'));
+  assert.equal(baseline.maximumFunctionId,126);
 });
 test('all seven polynomial shapes preserve coefficient order, including second-row intercept',()=>{
   const input=inputPreset();input.assignments.forEach((r,i)=>{r.coefficients=r.coefficients.map((_,j)=>i+j+.25);});
@@ -40,10 +39,10 @@ test('same fixed output grid and unscaled original disturbances; exact quarter s
 });
 test('import cannot introduce extra model controls and decimal commas are supported',()=>{
   const input=inputPreset();input.initial[0]='0,25';input.duration=5;input.disturbanceScale=.1;
-  const checked=validateInput(input);assert.deepEqual(Object.keys(checked),['initial','assignments']);
+  const checked=validateInput(input);assert.deepEqual(Object.keys(checked),['initial','fakOverrides','assignments']);
   const c=toEngineConfig(checked);assert.equal(c.initial[0],.25);assert.equal(c.duration,1);assert.equal(c.disturbanceScale,1);
 });
-test('original Python initial values outside 0…1 remain permitted and are flagged',()=>{
-  const input=inputPreset('comparison');input.initial[0]=-1;
-  const r=simulate(toEngineConfig(input));assert.ok(r.violations.some(v=>v.index===0&&v.time===0));
+test('UI domain is strictly positive and includes 1',()=>{
+  for(const value of [-1,0,1.0001]){const input=inputPreset();input.initial[0]=value;assert.throws(()=>validateInput(input),/больше 0/);}
+  const input=inputPreset();input.initial[0]=1;assert.equal(validateInput(input).initial[0],1);
 });
